@@ -2,13 +2,12 @@
 //  NIODeadlineEx.swift
 //  
 //
-//  Created by Ido on 26/05/2023.
-//
+// Created by Ido Rabin for Bricks on 17/1/2024.
 
 import Foundation
-import DSLogger
+import Logging
 import NIOCore
-fileprivate let dlog : DSLogger? = DLog.forClass("NIODeadlineEx")
+fileprivate let dlog: Logger? = Logger(label: "NIODeadlineEx")
 
 public extension NIODeadline /* delayFromNow : TimeInterval */ {
     static func delayFromNow(_ delay : TimeInterval)->NIODeadline {

@@ -2,8 +2,7 @@
 //  Version.swift
 //  
 //
-//  Created by Ido on 05/06/2023.
-//
+// Created by Ido Rabin for Bricks on 17/1/2024.
 
 import Foundation
 import MNUtils
@@ -25,11 +24,11 @@ enum PreRelease: String {
 let MNVAPOR_UTILS_NAME_STR = Bundle.main.bundleName ?? "MNVaporUtils"
 
 // String fields allow only alphanumerics and a hyphen (-)
-let MNVAPOR_UTILS_BUILD_NR: Int = 588
+let MNVAPOR_UTILS_BUILD_NR: Int = 626
 let MNVAPOR_UTILS_BUILD_VERSION = Semver(
     major: 0,
-    minor: 1,
+    minor: 2,
     patch: 0,
     prerelease: "\(PreRelease.alpha.rawValue)",
-    metadata: [String(format: "%04X", MNVAPOR_UTILS_BUILD_NR)]
+    metadata: [String(format: "0x%04X", MNVAPOR_UTILS_BUILD_NR)]
 )

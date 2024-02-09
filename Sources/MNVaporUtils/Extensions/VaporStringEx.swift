@@ -2,13 +2,12 @@
 //  VaporStringEx.swift
 //  
 //
-//  Created by Ido on 12/11/2022.
-//
+// Created by Ido Rabin for Bricks on 17/1/2024.
 
 
 
 import Foundation
-import DSLogger
+import Logging
 import MNUtils
 
 #if VAPOR
@@ -17,7 +16,7 @@ import MNUtils
 #endif
 
 
-fileprivate let dlog : DSLogger? = DLog.forClass("VaporStringEx")
+fileprivate let dlog : Logger? = Logger(label: "VaporStringEx")
 
 public extension Dictionary where Key : Codable, Value : Codable {
 
@@ -45,9 +44,9 @@ public extension Dictionary where Key : Codable, Value : Codable {
         
         for (key, val) in self {
             do {
-                
-                let newKey : String? = try self.encodeValToString(value: key, encoder: MNJSONEncoder(), isPercentEscape: isShouldPercentEscape);
-                let newVal : String? = try self.encodeValToString(value: val, encoder: MNJSONEncoder(), isPercentEscape: isShouldPercentEscape);
+                let encoder = MNJSONEncoder()
+                let newKey : String? = try self.encodeValToString(value: key, encoder: encoder, isPercentEscape: isShouldPercentEscape);
+                let newVal : String? = try self.encodeValToString(value: val, encoder: encoder, isPercentEscape: isShouldPercentEscape);
                 
                 if let newKey = newKey, let newVal = newVal, newKey.count > 0 {
                     // split if blocks to be better readable.

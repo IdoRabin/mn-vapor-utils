@@ -2,8 +2,7 @@
 //  VaporRequestEx.swift
 //  
 //
-//  Created by Ido on 03/07/2022.
-//
+// Created by Ido Rabin for Bricks on 17/1/2024.
 
 public enum RedirectEncoding : Int {
     case base64
@@ -13,16 +12,41 @@ public enum RedirectEncoding : Int {
 
 import Foundation
 import Vapor
-import DSLogger
+import Logging
 import MNUtils
 
-fileprivate let dlog : DSLogger? = DLog.forClass("VaporRequestEx")
+fileprivate let dlog : Logger? = Logger(label: "VaporRequestEx")
 
 
 public extension Vapor.Request /* App-specific components */ {
     // TODO: Update paramKeysToNeverRedirect on init from Some app settings / hard-coded
     static var paramKeysToNeverRedirect : [String] = []
     static var appHasSessionMiddleware : Bool = true
+    
+    var domain : String? {
+        guard var host = url.host else {
+            return self.application.http.server.configuration.hostname
+        }
+        
+        return MNDomains.sanitizeDomain(host)
+    }
+    
+    var refererURL : URL? {
+        if self.headers[.referer].count > 0, let url = URL(string: self.headers[.referer].first!) {
+            // Was redirected / referer
+            return url
+        }
+        return nil
+    }
+    
+    var refererRoute : Route? {
+        guard let refererURL = refererURL else {
+            return nil
+        }
+        return application.routes.all.first { route in
+            route.mnRouteInfo?.canonicalRoute?.matches(url:refererURL) ?? false
+        }
+    }
     
     // MARK: Saving info to session store
     func saveToSessionStore(key:any ReqStorageKey.Type, value:(any JSONSerializable)?) {
@@ -35,10 +59,14 @@ public extension Vapor.Request /* App-specific components */ {
         }
         
         // Will also save nil (and remove that key)
-        if let infoStr = value?.serializeToJsonString(prettyPrint: false) {
-            self.session.data[key.asString] = infoStr
+        if let value = value {
+            if let infoStr = value.serializeToJsonString(prettyPrint: false) {
+                self.session.data[key.asString] = infoStr
+            } else {
+                dlog?.warning("saveToSessionStore failed encoding \(key.asString) : \(type(of: value)) using serializeToJsonString()..")
+            }
         } else {
-            dlog?.warning("saveToSessionStore failed encoding \(key.asString) : \(type(of: value)) using serializeToJsonString()..")
+            self.session.data[key.asString] = nil
         }
     }
     
@@ -54,7 +82,9 @@ public extension Vapor.Request /* App-specific components */ {
                 dlog?.warning("getFromSessionStore failed decoding \(key.asString) : \(Value.self) using deserializeFromJsonString().. raw string: \(infoStr)")
             }
         } else if required {
-            dlog?.raisePreconditionFailure("getFromSessionStore failed fetching \(key.asString) : \(Value.self) value was not found in self.session.data")
+            let msg =  "getFromSessionStore failed fetching \(key.asString) : \(Value.self) value was not found in self.session.data"
+            dlog?.warning("\( msg )")
+            preconditionFailure(msg)
         }
         return nil
     }
@@ -66,16 +96,6 @@ public extension Vapor.Request /* App-specific components */ {
         
         self.saveToSessionStore(key: ReqStorageKeys.selfUserID, value: userId)
     }
-
-//    func saveToSessionStore(selfUser:MNUser?, selfAccessToken:MNAccessToken?) {
-//        guard Self.appHasSessionMiddleware else {
-//            return
-//        }
-//
-//        self.saveToSessionStore(key: ReqStorageKeys.selfUser, value: selfUser)
-//        self.saveToSessionStore(key: ReqStorageKeys.selfAccessToken, value: selfAccessToken)
-//        self.saveToSessionStore(userId: selfUser?.id?.uuidString)
-//    }
 
     // MARK: Saving info to request store
     func saveToReqStore<RSK:ReqStorageKey>(key:RSK.Type, value:RSK.Value?, alsoSaveToSession:Bool = false) {
@@ -91,7 +111,6 @@ public extension Vapor.Request /* App-specific components */ {
                 }
             } else if alsoSaveToSession && Self.appHasSessionMiddleware{
                 self.saveToSessionStore(key: key, value: nil)
-                
             }
         }
     }
@@ -118,6 +137,33 @@ public extension Vapor.Request /* App-specific components */ {
     }
 
 }
+
+public extension Vapor.Request /* convenience methods and more info  */ {
+    
+    static let REQUEST_UUID_STRING_PREFIX = "REQ|"
+    static let URL_ESCAPE_ENCODED_DETECTION_CHARACTERSET = CharacterSet(charactersIn: "%+&=")
+    
+    /// Returns the request's ID: each request gets its own uuid for logging purposes.
+    /// Example: "2D1ED539-CACF-4DB1-A6E6-2F8343135B3F"
+    var requestUUIDString: String {
+        get {
+            let result : Logger.MetadataValue? = self.logger[metadataKey: "request-id"]
+            if let result = result {
+                switch result {
+                case .string(let str):
+                    return Vapor.Request.REQUEST_UUID_STRING_PREFIX + str // UUID as a string
+                default:
+                    let msg = "Vapor.Request.requestUUIDString element was of an unexpected type."
+                    preconditionFailure(msg)
+                }
+            }
+            let msg = "Vapor.Request.requestUUIDString was undefined"
+            preconditionFailure(msg)
+        }
+    }
+}
+
+/* xxx
 public extension Vapor.Request /* redirects */ {
     
     /// redirects the request to a new url using 3xx redirect status codes. The function is wrapped to allow interception and modification of the redirect.
@@ -170,16 +216,16 @@ public extension Vapor.Request /* redirects */ {
         }
         
         let response : Response = self.redirect(to: fullUrl, redirectType: type)
-        self.routeHistory?.update(req: self, response: response)
+        self.routeHistory.update(req: self, response: response)
         if let error = errorToForward {
-            self.routeHistory?.update(req: self, error: error)
+            self.routeContext.setError(req: self, err: error, errorOrigPath: self.url.string, errReqId: self.id)
         }
         return response
     }
     
     /// Preparing the url for a 303 redirect. All the params areto be passed through the url
     /// http status / redirect 303 "see other" Forces the redirect to come with a GET, regardless of req method.
-    /// NOTE: There are some params that are NEVER alowed to be passed / forwarded in a redirect: see AppSettings.shared.server?.paramKeysToNeverRedirect
+    /// NOTE: There are some params that are NEVER alowed to be passed / forwarded in a redirect: see AppSettings ....paramKeysToNeverRedirect
     /// - Parameters:
     ///   - baseURL: the base url (path) for the redirect
     ///   - toBase64: should the parameters be counverted to base64?
@@ -211,7 +257,7 @@ public extension Vapor.Request /* redirects */ {
         var path = baseURL.asNormalizedPathOnly()
         if baseURLComps.count > 1 {
             path = baseURLComps.first!
-            let logPrefix = "prepStatus303RedirectURL [..\(path.lastPathComponents(count: 2))]"
+            let logPrefix = (dlog != nil) ? "prepStatus303RedirectURL [..\(path.lastPathComponents(count: 2))]" : "?"
             
             let query = baseURLComps[1..<baseURLComps.count].joined(separator: "?")
             var prevEncoding : RedirectEncoding? = nil
@@ -250,7 +296,7 @@ public extension Vapor.Request /* redirects */ {
                 
                 // MUTATING: Prevent some params from being redirected:
                 cleanupParams()
-                params.remove(valuesForKeys: [constants.BASE_64_PARAM_KEY])
+                params.remove(valuesForKeys: [MNUtils.constants.BASE_64_PARAM_KEY])
                 
                 // Create the redirection url params as a string:
                 urlQuery = params.toURLQueryString(encoding:encoding)
@@ -269,263 +315,168 @@ public extension Vapor.Request /* redirects */ {
         return result
     }
 }
+ */
 
+/*
 public extension Vapor.Request /* selfUser and access token */ {
     
-    static let REQUEST_UUID_STRING_PREFIX = "REQ|"
-    static let URL_ESCAPE_ENCODED_DETECTION_CHARACTERSET = CharacterSet(charactersIn: "%+&=")
     
-    /// Returns the request's ID: each request gets its own uuid for logging purposes.
-    /// Example: "2D1ED539-CACF-4DB1-A6E6-2F8343135B3F"
-    var requestUUIDString: String {
-        get {
-            let result : Logger.MetadataValue? = self.logger[metadataKey: "request-id"]
-            if let result = result {
-                switch result {
-                case .string(let str):
-                    return Vapor.Request.REQUEST_UUID_STRING_PREFIX + str // UUID as a string
-                default:
-                    dlog?.raisePreconditionFailure("Vapor.Request.requestUUIDString element was of an unexpected type.")
-                }
-            }
-            dlog?.raisePreconditionFailure("Vapor.Request.requestUUIDString was undefined")
-            preconditionFailure("Vapor.Request.requestUUIDString was undefined")
-        }
-    }
     
     var selfUserUUIDString: String? {
         return self.selfUserUUID?.uuidString
     }
     
     var selfUserUUID: UUID? {
-        // return self.selfUser?.id
-        return nil
+        return self.selfUser?.id
     }
     
-    /*
     var selfUser : MNUser? {
-        if let user : MNUser = self.getFromReqStore(key: ReqStorageKeys.selfUser) {
+        if let user : MNUser = self.getFromReqStore(key: ReqStorageKeys.selfUser, getFromSessionIfNotFound: true) {
             return user
         }
         
-//        guard let accessToken = self.getAccessToken(context: "VaporRequestEx.selfUser property") else {
-//            return nil
-//        }
+        return self.accessToken?.user
+    }
+    
+    var accessToken : MNAccessToken? {
+        return self.getFromReqStore(key: ReqStorageKeys.selfAccessToken)
+    }
+    
+    func getSelfUser(context:String) async throws -> MNUser? {
+        if let user : MNUser = self.getFromReqStore(key: ReqStorageKeys.selfUser, getFromSessionIfNotFound: true) {
+            return user
+        }
         
-        // TODO: Uncomment:
-        let result : MNUser? = nil
-//        accessToken.$user.value
-//        if let result = result {
-//            // Save to req storage
-//            self.saveToReqStore(key: ReqStorageKeys.selfUser, value: result, alsoSaveToSession: false)
-//        }
+        var result : MNUser? = nil
+        if let accessToken = try await self.getAccessToken(context: "VaporRequestEx.getSelfUser>\(context)") {
+            result = accessToken.$user.wrappedValue
+            // Save to req storage
+            self.saveToReqStore(key: ReqStorageKeys.selfUser, value: result, alsoSaveToSession: false)
+        }
+        
         return result
-    }*/
+    }
     
-//    var accessToken : MNAccessToken? {
-//        return self.getAccessToken(context: "VaporRequestEx.accessToken property")
-//    }
-    
-//    private func getAccessTokenFromBearerToken(_ logPrefix:String)->MNAccessToken? {
-//        var result : MNAccessToken? = nil
-//        if result == nil, let tokenStr = self.headers.bearerAuthorization?.token ?? self.session.data[SelfAccessTokenStorageKey.asString] ?? self.session.data[AccessTokenStorageKey.asString] {
-//            do {
-//                // TODO: Uncomment:
-//                // dlog?.success("Success getting request/session accessToken (+self user)")
-//                let res = try AccessToken(bearerToken: tokenStr, allowExpired: true)
-//                if res.isValid && !res.isEmpty {
-//                    self.saveToReqStore(key: ReqStorageKeys.selfAccessToken, value: result)
-//                    self.saveToSessionStore(key: ReqStorageKeys.selfAccessToken, value: result)
-//                    result = res
-//                }
-//            } catch let error {
-//                dlog?.warning("\(logPrefix) creation or fetchfrom request headers / storage failed with error: " + error.description)
-//            }
-//        }
-//        return result
-//    }
-    
-//    func getAccessToken(context:String?)->AccessToken? {
-//        // Cached value
-//        guard let accessToken : AccessToken = self.getFromReqStore(key: ReqStorageKeys.selfAccessToken) else {
-//            self.saveToReqStore(key: ReqStorageKeys.selfAccessToken, value: AccessToken.emptyToken)
-//            return nil
-//            // Return
-//        }
-//
-//        guard accessToken.isEmpty else {
-//            return nil
-//            // Return
-//        }
-//
-//        // Start actual fetching:
-//        let logPrefix = (context?.count ?? 0 > 0) ? "getAccessToken(context: \(context ?? ""))" : "getAccessToken:"
-//
-//        // Try getting the access token string from the bearer token or from session storage
-//        let result : MNAccessToken? = self.getAccessTokenFromBearerToken(logPrefix)
-//
-//        if MNUtils.debug.IS_DEBUG {
-//            if result == nil && !self.url.path.lowercased().contains(anyOf: ["/login", "login/"]) {
-//                // Log missing access toeken / user
-//                dlog?.note("\(logPrefix) req: \(self.url.path.lastPathComponents(count: 3)) Failed finding accessToken in the request/session (also self user)")
-//            }
-//        }
-//
-//        // Save to req storage
-//        self.saveToReqStore(key: ReqStorageKeys.selfAccessToken, value: result ?? MNAccessToken.emptyToken /* all zeroes*/ , alsoSaveToSession: false)
-//
-//        return (result?.isEmpty ?? true) ? nil : result
-//    }
+    /// Get access token from request, session caches or from the bearer token if it is in the request
+    /// - Parameter context: string context of the function call
+    /// - Returns: access token if found in any way
+    func getAccessToken(context:String) async throws -> MNAccessToken? {
+        var result : MNAccessToken? = self.getFromReqStore(key: ReqStorageKeys.accessToken, getFromSessionIfNotFound: true)
+        if result == nil, let tokenStr = self.headers.bearerAuthorization?.token {
+            result = try await MNAccessToken.find(bearerToken: tokenStr, for: self)
+        } else if result == nil, let tokenStr = self.cookies[MNAccessToken.TOKEN_COOKIE_NAME]?.string {
+            result = try await MNAccessToken.find(bearerToken: tokenStr, for: self)
+        }
+        
+        return result
+    }
 }
 
-extension Vapor.Request /* App-specific : route context and history */ {
+/* xxx
+// MARK: MNRouteManager - Indirect access to AppServer.shared.routes
+public extension Vapor.Route  /* MNRoutes - route manager etc */ {
     
-    public var routeContext : MNRouteContext? {
-        return self.getFromReqStore(key: MNRouteContextStorageKey.self, getFromSessionIfNotFound: true)
-    }
-    
-    public var routeHistory : MNRoutingHistory? {
-        return self.getFromSessionStore(key: ReqStorageKeys.appRouteHistory)
-    }
-    
-    public func getError(byReqId:String)->(err:MNError, path:String, requestId:String)? {
-        var reqId = byReqId
-        if reqId.contains("%") {
-            reqId = reqId.removingPercentEncodingEx ?? reqId
+    static var mnRouteManager : MNRoutingMgr! {
+        guard globalMNRouteMgr != nil else {
+            let msg = "App init should set globalMNRouteMgr before calling Vapor.Route.mnRouteManager"
+            preconditionFailure(msg)
         }
-        // Get from history:
-        for posi in self.routeHistory?.items ?? [] {
-            if posi.requestID == reqId, let err = posi.mnError {
-                return (err:err, path:posi.path, requestId:posi.requestID)
-            }
+        return globalMNRouteMgr
+    }
+    
+    var mnRouteManager : MNRoutingMgr {
+        return Self.mnRouteManager
+    }
+    
+}
+ */
+
+public extension Vapor.Parameters {
+   /// Vapor.Parameters: Holds dynamic path components that were discovered while routing.
+   ///
+   /// After this struct has been filled with parameter values, you can fetch
+   /// them out by name using `get(_:)`.
+   func asDictionary(keys:[String])->[String:String] {
+       var result : [String:String] = [:]
+       for key in keys {
+           if let val = self.get(key) {
+               result[key] = val
+           }
+       }
+       
+       return result
+   }
+   
+   func asDictionary(urlQuery:String)->[String:String] {
+       return urlQuery.asQueryParamsDictionary(pairsDelimiter: "&", keyValDelimieter: "=", recursiveUnescape: false) ?? [:]
+   }
+   
+   func asDictionary(url:URL)->[String:String] {
+       if #available(macOS 13.0, *) {
+           return self.asDictionary(urlQuery: url.query(percentEncoded: false) ?? "")
+       } else {
+           // Fallback on earlier versions
+           return self.asDictionary(urlQuery: url.query?.removingPercentEncodingEx ?? "")
+       }
+   }
+
+}
+
+public extension Vapor.URI {
+   
+   var queryParams : [String:String] {
+       let parts = self.query?.components(separatedBy: "&")
+       var result : [String:String] = [:]
+       parts?.forEach({ part in
+           let comps = part.components(separatedBy: "=")
+           result[comps.first!] = comps.last!
+       })
+       return result
+   }
+}
+
+extension Vapor.Request.Body {
+    func asWebformQueryParams(context:String) -> [String:String]? {
+        let dataStr = (self.data != nil) ? "\(self.data!.readableBytes)" : "<no data>"
+        
+        guard let bodyString = self.string, bodyString.count > 0 else {
+            // dlog?.note("webformBodyParams requested when no Request.body.string exists (context: \(context) readableBytes:\(dataStr)")
+            return nil
+        }
+        
+        guard let dict = bodyString.asQueryParams() else {
+            dlog?.warning("webformBodyParams failed at comps.asDictionary (context: \(context) readableBytes:\(dataStr))")
+            return nil
+        }
+        
+        return dict
+    }
+    
+    // as BodyJSON
+    func asBodyJSON(context:String) -> [String:Any]? {
+        return self.asJSONBody(context: context)
+    }
+    
+    func asJSONBody(context:String) -> [String:Any]? {
+        // let dataStr = (self.data != nil) ? "\(self.data!.readableBytes)" : "<no data>"
+        
+        guard let bodyString = self.string, bodyString.count > 2 else {
+            // dlog?.note("webformBodyParams requested when no Request.body.string exists (context: \(context) readableBytes:\(dataStr)")
+            return nil
+        }
+        
+        do {
+            let dict = try JSONSerialization.jsonObject(with: self.data!) as! [String:Any]
+            dlog?.success("deserialized: \(dict)")
+            return dict
+        } catch let error {
+            dlog?.warning("failed deserializing JSON! \(error.description)")
         }
         return nil
     }
-    
-    public func getLastError()->(err:MNError, path:String, requestId:String)? {
-        let possibles = self.routeHistory?.items.filter { item in
-            if let err = item.mnError {
-                return err.httpStatus != HTTPStatus.ok
-            } else {
-                return false
-            }
-        } ?? []
-        
-        var result : (err:MNError, path:String, requestId:String)? = nil
-
-        // Get from history:
-        for posi in possibles {
-            if let err = posi.mnError,
-                result == nil || result?.err.code ?? Int.min == HTTPStatus.ok.code {
-                
-                result = (err:err, path:posi.path, requestId:posi.requestID)
-                break // was found...
-            }
-        }
-        
-
-        return result
-    }
-    
-    var productType : RouteProductType {
-        var result : RouteProductType = .unknown
-        let arcontext = self.routeContext ?? MNRouteContext.setupRouteContext(for: self)
-
-        
-        // Check using route infos:
-        // Get route info:
-        
-        // Get product type:
-        
-        
-        // Check using route context:
-        if result == .unknown && arcontext.productType != .unknown {
-            result = arcontext.productType
-        }
-        
-        // Check using GET and accept-type headers
-        if result == .unknown {
-            if self.method == .GET && self.headers.accept.mediaTypes.contains(where: { $0 == .html }) {
-                result = .webPage
-            }
-        }
-        
-        return result
-    }
 }
 
-
-
-/* ------------------------------------------------------
- 
- NOTE: Decoding requst into a Type instance:
- // Reuires the type to be decodable..
- 
- let myInstance : MyType = try req.content.decode(MyType.self)
- 
- */
-/*
- public extension ContentContainer {
-    // MARK: Decode
-    
-    public func decodeAsAppResult<D>(_ content: D.Type)->AppResult<D> where D: Decodable {
-        do {
-            let result : D = try self.decode(content)
-            return .success(result)
-        } catch let error {
-            return .failure(fromError: error)
-        }
-    }
-}
-
- public extension Vapor.URI {
-    
-    var queryParams : [String:String] {
-        let parts = self.query?.components(separatedBy: "&")
-        var result : [String:String] = [:]
-        parts?.forEach({ part in
-            let comps = part.components(separatedBy: "=")
-            result[comps.first!] = comps.last!
-        })
-        return result
-    }
-}
-
- public extension Vapor.Parameters {
-    /// Vapor.Parameters: Holds dynamic path components that were discovered while routing.
-    ///
-    /// After this struct has been filled with parameter values, you can fetch
-    /// them out by name using `get(_:)`.
-    func asDictionary(keys:[String])->[String:String] {
-        var result : [String:String] = [:]
-        for key in keys {
-            if let val = self.get(key) {
-                result[key] = val
-            }
-        }
-        
-        return result
-    }
-    
-    func asDictionary(urlQuery:String)->[String:String] {
-        return urlQuery.asQueryParamsDictionary(pairsDelimiter: "&", keyValDelimieter: "=", recursiveUnescape: false) ?? [:]
-    }
-    
-    func asDictionary(url:URL)->[String:String] {
-        if #available(macOS 13.0, *) {
-            return self.asDictionary(urlQuery: url.query(percentEncoded: false) ?? "")
-        } else {
-            // Fallback on earlier versions
-            return self.asDictionary(urlQuery: url.query?.removingPercentEncodingEx ?? "")
-        }
-    }
-
-}
-
-public extension Vapor.Request {
-    
-
-    
+public extension Vapor.Request /* params collection */ {
     /// Deserializes the body as a json into an expected Deserializable Type.
     /// - Returns: the expected type deserialized from the boy's JSON, or nil
     func deserializeBodyJson<AType:JSONSerializable>()->AType? {
@@ -557,7 +508,7 @@ public extension Vapor.Request {
     /// Get ALL params regardless of request method - i.e collect body params, POST params, GET params (url query params),  web form formatted body params, or a flat (depth of 1) JSON in the post body params, header params and more., Returns a dictionary of all the above found params and values.
     /// This is a function and not a var to indicate this entails some proccessing / CPU price to get the result.
     /// NOTE: in case of duplicate keys for params, the result is not defined / not trusted. (will log a warning)
-    func collatedAllParams(isCollatesHeaders : Bool = false, isRecursivePercentDecode : Bool = true)->[String:String] {
+    func collatedAllParams(isCollatesHeaders : Bool = false, isRecursivePercentDecode : Bool = true)->[String:Codable] {
         var result : [String:String] = [:]
         
         // |1| get paraams from URL query string (?key=val&key2=val2...)
@@ -609,12 +560,20 @@ public extension Vapor.Request {
         for key in ReqStorageKeys.all {
             if let val = self.storage.get(key) {
                 let keyStr = key.asString
-                dlog?.info("Found key: \(keyStr)..=..\(val)")
+                if let val = val as? LosslessStringConvertible {
+                    result[keyStr] = val.description
+                } else if let val = val as? any MNModel, let idStr = val.id?.uuidString {
+                    result[keyStr] = idStr
+                } else {
+                    dlog?.info("Found key: \(keyStr) .. = .. \(val)")
+                }
+                
             }
         }
+        
         // Explode a base64 param if found
-        if let base64 = result[AppConstants.BASE_64_PARAM_KEY], let exploded = base64.explodeBase64IfPossible() {
-            result[AppConstants.BASE_64_PARAM_KEY] = nil
+        if let base64 = result[MNUtils.constants.BASE_64_PARAM_KEY], let exploded = base64.explodeBase64IfPossible() {
+            result[MNUtils.constants.BASE_64_PARAM_KEY] = nil
             result.merge(dict: exploded)
         }
         
@@ -628,7 +587,7 @@ public extension Vapor.Request {
                     var newValDict : [String:String]? = nil
                     
                     // Optimization: We try to removingPercentEncoding only if we find at least one of a few "indicating" chars in the string:
-                    if false && AppConstants.IS_VAPOR_SERVER { // Allow trying to decode a key as an escaped dictionary?
+                    if false && MNUtils.constants.IS_VAPOR_SERVER { // Allow trying to decode a key as an escaped dictionary?
                         if key.contains(anyIn: Self.URL_ESCAPE_ENCODED_DETECTION_CHARACTERSET), let newDict = key.removingPercentEncodingEx?.asQueryParams() {
                             // dlog?.info("collatedAllParams newKeyDict: \(newDict)")
                             newKeyDict = newDict
@@ -653,9 +612,9 @@ public extension Vapor.Request {
         return result
     }
     
-    func anyParameters(fromAnAllParams allParams:[String:String] , forKeys keys:[String], isCaseSensitive:Bool = false, isSearchURLQueryParams : Bool = true, isStopOnFirstFound:Bool = false)->[String:String] {
+    func anyParameters(fromAnAllParams allParams:[String:Codable] , forKeys keys:[String], isCaseSensitive:Bool = false, isSearchURLQueryParams : Bool = true, isStopOnFirstFound:Bool = false)->[String:Codable] {
         
-        var result : [String:String] = [:]
+        var result : [String:Codable] = [:]
         for key in keys {
             for kvariant in key.serializationIssuesVariants() {
                 if let paramVal = allParams[kvariant] {
@@ -681,133 +640,103 @@ public extension Vapor.Request {
     ///   - isSearchURLQueryParams: will additionaly search the URL query params (.GET has params in the URL query after the https://my.site.com/?param1=val2&param2=val2), this lets one treat a POST and GET request qith the same parameter searching tool. default true.
     ///   - isStopOnFirstFound: will stop after finding one param ky/value for the given keys. This is good when searching for a single value result, with multiple possible keys. When false, will return all results found - for instance when searching multiple key-val pairs with multiple kays.
     /// - Returns: dictionary of key-value params and values, or empty dictionary if none found.
-    func anyParameters(forKeys keys:[String], isCaseSensitive:Bool = false, isSearchURLQueryParams : Bool = true, isStopOnFirstFound:Bool = false)->[String:String] {
+    func anyParameters(forKeys keys:[String], isCaseSensitive:Bool = false, isSearchURLQueryParams : Bool = true, isStopOnFirstFound:Bool = false)->[String:Codable] {
         
         let allParams = self.collatedAllParams()
         return self.anyParameters(fromAnAllParams: allParams, forKeys: keys)
     }
-    
-    func isValidJSONBodyRequest()->Error? {
-        let request = self
-        
-        guard let clength = request.headers["Content-Length"].first, let contentLength = UInt64(clength), contentLength > 12 else {
-            return Abort(.unauthorized, reason: "request content length is too small")
-        }
-        
-        guard request.content.contentType != nil else {
-            // ,let data = req.content.decode(Data.self), data.count > 0
-            return Abort(.unauthorized, reason: "request content missing some/all new User data.")
-        }
-        
-        guard let _ = request.body.data else {
-            return Abort(.unauthorized, reason: "request body has no data")
-        }
-        
-        return nil
+}
+
+extension Vapor.Request : MNRouteReadOnlyInfoable {
+    public var title: String? {
+        return self.routeInfo.title
     }
     
+    public var desc: String? {
+        return self.routeInfo.desc
+    }
     
+    public var canonicalPath: String? {
+        return self.routeInfo.canonicalPath
+    }
     
+    public var fullPath: String? {
+        return self.url.path
+    }
     
+    public var groupName: String? {
+        return self.routeInfo.groupName
+    }
     
-    /// redirects the request to a new url using 3xx redirect status codes. The function is wrapped to allow interception and modification of the redirect.
-    /// - Parameters:
-    ///   - location: location to redirect the request to
-    ///   - type: type of redirection (http statused 301, 303, 307 and their implications)
-    ///   - toBase64: should redirect wrap the params as Base64 (mostly used in GET redirects, where the params are in the URL query..)
-    ///   - params:params to definately pass
-    ///   - errorToForward:an error to forward to the redirect as a params or in the session route history
-    ///   - isShoudlForwardAllParams: will pass all params that we can find from this request as the arams for the redirected request. Otherwise, will forward just the params parameter, errorToForward if it exists
-    ///   - contextStr: textual context of the redirect.
-    /// - Returns:a response of the redirect request.
-    public func wrappedRedirect(to location: String,
-                                type: RedirectType = .normal,
-                                toBase64:Bool = false,
-                                params:[String:String],
-                                errorToForward:AppError? = nil,
-                                isShoudlForwardAllParams : Bool,
-                                contextStr:String) -> Response {
-        
-        // Redictect codes: force redirect to error page:
-        //   case .permanent 301  A cacheable redirect.
-        //   case .normal    303  "see other" Forces the redirect to come with a GET, regardless of req method.
-        //   case .temporary 307  Maintains original request method, ie: PUT will call PUT on redirect.
-        var fullUrl = location;
-        
-        var params = params
-        if isShoudlForwardAllParams && params.count == 0, let urlParams = location.asQueryParams() {
-            params.merge(dict: urlParams)
-        }
-        if !self.hasSession {
-            _ = self.session // creates a session if needed
-        }
-        dlog?.info("PREPARING: wrappedRedirect to: \(location.split(separator: "?").first.descOrNil) params:\(params.descriptionLines) redirect context: [\"\(contextStr)\"]")
-        
-        switch type {
-        case .normal:
-            
-            // Will force a GET redirect:
-            // We need to make sure to collect all the params from other places (such as body or headers) if needed:
-            // Add orig Request id and sessionId to params:
-            fullUrl = self.prepStatus303RedirectURL(to: fullUrl,
-                                                    toBase64:toBase64,
-                                                    params:params,
-                                                    isShoudlForwardAllParams:isShoudlForwardAllParams,
-                                                    context: contextStr) ?? "unknown_redirect_url"
-        case .permanent:
-            break
-        case .temporary:
-            break
-        }
-        
-        let response : Response = self.redirect(to: fullUrl, type: type)
-        self.routeHistory?.update(req: self, response: response)
-        if let error = errorToForward {
-            self.routeHistory?.update(req: self, error: error)
-        }
-        return response
+    public var bodyStreamStrategy: Vapor.HTTPBodyStreamStrategy {
+        return self.routeInfo.bodyStreamStrategy
+    }
+    
+    public var isSecure: Bool {
+        return self.routeInfo.isSecure
+    }
+    
+    public var productType : RouteProductType {
+        self.routeInfo.productType
+    }
+    
+    public var requiredAuth: MNRouteAuth {
+        self.routeInfo.requiredAuth
+    }
+    
+    public var httpMethods: Set<NIOHTTP1.HTTPMethod> {
+        return [self.method]
     }
 }
 
-extension Vapor.Request.Body {
+public extension Vapor.Request /* MNRoutes / route context and history */ {
     
-    func asWebformQueryParams(context:String) -> [String:String]? {
-        let dataStr = (self.data != nil) ? "\(self.data!.readableBytes)" : "<no data>"
-        
-        guard let bodyString = self.string, bodyString.count > 0 else {
-            // dlog?.note("webformBodyParams requested when no Request.body.string exists (context: \(context) readableBytes:\(dataStr)")
-            return nil
-        }
-        
-        guard let dict = bodyString.asQueryParams() else {
-            dlog?.warning("webformBodyParams failed at comps.asDictionary (context: \(context) readableBytes:\(dataStr))")
-            return nil
-        }
-        
-        return dict
+    // MARK: hashable
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(self.url.path)
+        hasher.combine(self.method.rawValue)
+        hasher.combine(self.id)
     }
     
-    // as BodyJSON
-    func asBodyJSON(context:String) -> [String:Any]? {
-        return self.asJSONBody(context: context)
+    var routeInfo : (any MNRouteInfoable) {
+        guard let route = self.route else {
+            preconditionFailure("request: \(self.method) \(self.url.string) has no registered Vapor.Route!")
+        }
+        
+        return route.routeInfo
     }
     
-    func asJSONBody(context:String) -> [String:Any]? {
-        // let dataStr = (self.data != nil) ? "\(self.data!.readableBytes)" : "<no data>"
+    func updateRouteContext(info:any MNRouteInfoable) {
+        self.routeContext.update(withDict: info.asDict())
+    }
+    
+    func updateRouteContext(infoDict:[RouteInfoCodingKeys : Any]) {
+        self.routeContext.update(withDict: infoDict)
+    }
+    
+    var routeContext : MNRouteContext {
+        var result : MNRouteContext? = self.getFromReqStore(key: ReqStorageKeys.appRouteContext, getFromSessionIfNotFound: false)
+        if result == nil {
+            result = MNRouteContext(route: self.route!)
+            result!.fullPath = self.url.path.asNormalizedPathOnly()
+            result!.updateInSession(with: self, info: self.routeInfo)
+            
+            self.saveToReqStore(key: ReqStorageKeys.appRouteContext, value: result!)
+        }
+
+        return result!
+    }
+    
+    var routeHistory : MNRoutingHistory {
+        var result : MNRoutingHistory? = self.getFromSessionStore(key: ReqStorageKeys.appRouteHistory)
         
-        guard let bodyString = self.string, bodyString.count > 2 else {
-            // dlog?.note("webformBodyParams requested when no Request.body.string exists (context: \(context) readableBytes:\(dataStr)")
-            return nil
+        // Crate and save if doesn't exist:
+        if result == nil {
+            result = MNRoutingHistory()
+            self.saveToSessionStore(key: ReqStorageKeys.appRouteHistory, value: result!)
         }
         
-        do {
-            let dict = try JSONSerialization.jsonObject(with: self.data!) as! [String:Any]
-            dlog?.success("deserialized: \(dict)")
-            return dict
-        } catch let error {
-            dlog?.warning("failed deserializing JSON! \(error.description)")
-        }
-        return nil
+        return result!
     }
 }
-*/ // ---------------------------------------------
+*/

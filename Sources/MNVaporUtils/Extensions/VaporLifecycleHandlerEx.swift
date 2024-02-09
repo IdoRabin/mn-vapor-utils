@@ -1,9 +1,8 @@
 //
 //  VaporLifecycleHandlerEx.swift
-//  
 //
-//  Created by Ido on 27/05/2023.
 //
+// Created by Ido Rabin for Bricks on 17/1/2024.
 
 import Foundation
 import Vapor
@@ -15,9 +14,12 @@ public protocol LifecycleBootableHandler : Vapor.LifecycleHandler {
     //    func afterBoot(_ app: Vapor.Application)
 }
 
-public extension LifecycleBootableHandler {
+/*
+public extension LifecycleBootableHandler /* default implementation */ {
     func boot(_ app: Vapor.Application) throws {}
     
     //deprecated: Use didBoot! (see LifecycleHandler)
     //     func afterBoot(_ app: Vapor.Application) { }
 }
+
+*/
