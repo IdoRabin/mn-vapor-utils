@@ -8,6 +8,9 @@
 import Foundation
 import Vapor
 import MNUtils
+import Logging
+
+fileprivate let dlog : Logger? = Logger(label:"MNSessionHistoryMiddleware")
 
 
 /// Automatically adds to a user session am "MNSessionHistory" under the key MNRoutingHistoryStorageKey
@@ -26,7 +29,13 @@ public class MNSessionHistoryMiddleware : Middleware {
         
         // Add to history:
         let result : EventLoopFuture<Response> = next.respond(to: request).flatMapThrowing { response in
-            request.routeHistory?.update(req: request, response: response)
+            
+            let isFileRequest = request.url.url.pathExtension.count > 0
+            let isShouldUpdate = (MNRoutingHistory.SAVES_FILE_REQUESTS || !isFileRequest)
+            if isShouldUpdate {
+                try request.routeHistory?.update(req: request, response: response)
+            }
+            
             return response
         }
         

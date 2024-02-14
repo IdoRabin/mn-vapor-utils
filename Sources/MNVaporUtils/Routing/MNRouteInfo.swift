@@ -60,7 +60,7 @@ public struct MNRouteInfo : Sendable, JSONSerializable {
     }
     
     public mutating func update(withRoute route:Route) {
-        self.canonicalRoute = MNCanonicalRoute(url: route.path.string, method: route.method)
+        self.canonicalRoute = MNCanonicalRoute(urlStr: route.path.string, method: route.method)
     }
     
 //    public mutating func mutateSelf(_ setup : (_ info:Self)->Void) {

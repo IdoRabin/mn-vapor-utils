@@ -15,12 +15,12 @@ import Logging
 fileprivate let dlog : Logger? = Logger(label:"MNCanonicalRoute")
 
 public struct MNCanonicalRoute : Sendable, JSONSerializable, Hashable, CustomStringConvertible {
-    public let url: String
+    public let urlStr: String
     public let method: HTTPMethod
     
     // MARK: CustomStringConvertible
     public var description: String {
-        return "\(method) \(url.asNormalizedPathOnly())"
+        return "\(method) \(urlStr.asNormalizedPathOnly())"
     }
     
     private func matchMethods(method methodToTest:HTTPMethod? = nil)->Bool {
@@ -36,7 +36,7 @@ public struct MNCanonicalRoute : Sendable, JSONSerializable, Hashable, CustomStr
             return false
         }
         
-        guard (urlToTest.relativePath == self.url) else {
+        guard (urlToTest.relativePath.asNormalizedPathOnly() == self.urlStr.asNormalizedPathOnly()) else {
             return false
         }
         
@@ -44,7 +44,19 @@ public struct MNCanonicalRoute : Sendable, JSONSerializable, Hashable, CustomStr
             return false
         }
         
-        return false
+        // Match did not fail:
+        return true
     }
     
+    public func matches(other:MNCanonicalRoute?)->Bool {
+        guard let other = other else {
+            return false
+        }
+        guard let url = URL(string: other.urlStr) else {
+            let msg = "MNCanonicalRoute.matches(other) failed to create URL".mnDebug(add: " string:\(other.urlStr)")
+            dlog?.warning("\(msg)")
+            return false
+        }
+        return self.matches(url: url, method: other.method)
+    }
 }

@@ -28,6 +28,7 @@ internal struct MNRoutingHistoryStorageKey : ReqStorageKey {
 public class MNRoutingHistory : JSONSerializable, Hashable, CustomStringConvertible {
     
     public static let DEFAULT_MAX_ITEMS = 15 // Maximum history items per session
+    public static let SAVES_FILE_REQUESTS = false
     
     // MARK: static
     static let UNKNOWN_REQ_ID = "UNKNOWN_REQ_ID"
@@ -52,15 +53,15 @@ public class MNRoutingHistory : JSONSerializable, Hashable, CustomStringConverti
     }
     
     // MARK: Getters / computed properties
-    var first : MNRoutingHistoryItem? {
+    public var first : MNRoutingHistoryItem? {
         return items.first
     }
     
-    var last : MNRoutingHistoryItem? {
+    public var last : MNRoutingHistoryItem? {
         return items.last
     }
     
-    var oneBeforeLast : MNRoutingHistoryItem? {
+    public var oneBeforeLast : MNRoutingHistoryItem? {
         guard items.count > 1 else {
             return nil
         }
@@ -72,121 +73,157 @@ public class MNRoutingHistory : JSONSerializable, Hashable, CustomStringConverti
         req.saveToSessionStore(key: MNRoutingHistoryStorageKey.self, value: self)
     }
     
-    /*
-    // MARK: public Add / update funcs
-    @discardableResult
-    func update(path:String, method:HTTPMethod, reqId:String, error:MNError?)->MNRoutingHistoryItem {
-        var result : MNRoutingHistoryItem!
-        if let historyItem = self.items.first(where: { item in
-            item.requestID == reqId && item.httpMethod == method
-        }) {
-            // Item already existed
-            result = historyItem
-            if historyItem.mnError == nil {
-                historyItem.mnError = error
-            } else {
-                historyItem.mnError?.appendUnderlyingError(error)
+    public func findItem(otherItem : MNRoutingHistoryItem)->MNRoutingHistoryItem? {
+        return items.reversed().first { item in
+            item == otherItem
+        }
+    }
+    
+    public func findItem(req:Request)->MNRoutingHistoryItem? {
+        return items.reversed().first { item in
+            item.requestId == req.requestUUIDString
+        }
+    }
+    
+    public func first(where block:(_ item:MNRoutingHistoryItem)->Bool)->MNRoutingHistoryItem? {
+        return items.reversed().first { item in
+            return block(item)
+        }
+    }
+    
+    public func getError(byReqId reqId: String)->MNErrorStruct? {
+        // Note: Expecting a requestUUIDString
+        let reqId = Vapor.Request.requestUUIDString(id: reqId)
+        return items.reversed().first { item in
+            item.requestId == reqId && item.lastErrorStruct != nil
+        }?.lastErrorStruct
+    }
+    
+    
+    /// Returns the most recent history item that contains an error
+    /// - Parameter limit: limits how many items back should we go. Default is 2 items back and no more.
+    /// - Parameter timeBackCutoff: Cutoff in seconds to the past, items older than this amout are ignored. Default is a cutoff of 5 seconds into the past.
+    /// - Returns: the first history item encountered that contains an error within the limitations
+    public func getLatestErrorItem(limit:Int = 2, timeBackCutoff:TimeInterval = 5)->MNRoutingHistoryItem? {
+        var index = 0
+        for item in items.reversed() {
+            if index >= limit {
+                return nil
+            } else if (item.lastErrorStruct != nil && 
+                       abs(item.lastUpdate.timeIntervalSinceNow) < timeBackCutoff) {
+                return item
             }
-            dlogVerbose?.successOrFail(condition: error != nil, "update EXs \(historyItem) with error: \(error?.reason ?? "<nil>")")
-            
-        } else {
-            
-            // New item required:
-            let newHistoryItem = MNRoutingHistoryItem(requestID: reqId, path: path, httpMethod: method)
-            newHistoryItem.mnError = error
-            dlogVerbose?.successOrFail(condition: error != nil, "adding NEW \(newHistoryItem) with error: \(error?.reason ?? "<nil>")")
-            
-            self.items.append(newHistoryItem)
-            if self.items.count > 0 && self.items.count > self.maxItems {
-                // This class should NOT contain all the browsing history in a session, jut the recent calls to allow managing redirects etc..
-                self.items.remove(at: 0)
-            }
-            result = newHistoryItem
+        }
+        return nil
+    }
+    
+    
+    /// Deduces the redirectedFrom for a history item using a the history items, and the request. We ferch the referer from the request and the redirectTo from the prvious history item,
+    /// rerturning a HistoryItem action of .redirectTo if we deduced successfully:
+    /// - Parameters:
+    ///   - item: history item to deduce  a redirectedFrom for.
+    ///   - req: request of the history item being added (expected after the redirect, thus the req should have a referer header
+    ///   - response: response, if available of the request
+    /// - Returns:a redirectedFrom action for a history item, filled with the data of the (previous) history item thet initiated the redirect.
+    private func deduceRedirectFrom(item:MNRoutingHistoryItem, for req:Request, response:Response? = nil) -> MNRoutingHistoryItem.Action? {
+        let prfx = "    MNRoutingHistory.deduceRedirectFrom:"
+        
+        // if cur response is a redirect we are at the hisotry item that is BEING redirected TO, i.e we for sure do not need to return a redirectFrom.
+        if response?.status.isRedirect ?? false {
+            return nil
         }
         
-        // Udate error or clear it:
-        if let err = error {
-            result.setError(err)
-        } else {
-            result.clearError()
+        let prev = (self.last == item) ? self.oneBeforeLast : self.last
+        let refererItem = self.first { item in
+            item.requestId != item.requestId &&
+            (200...299).contains(Int(item.lastStatus.code))
         }
+        
+        dlogVerbose?.info("\(prfx) \(prev?.requestId ?? "<no prev>") redirTo: \(prev?.lastRedirectedTo?.shortDescription ?? "<no redirTo>")")
+        if let prev = prev {
+            var isAllowed = true
+            
+            if let refererURL = req.refererURL, let refererItem = refererItem {
+                // NOTE: Referer URL should equal the last valid (.ok status or similar) URL the client has visited!
+                if refererItem.url.relativePath == refererURL.relativePath {
+                    dlogVerbose?.success("\(prfx) referer url validated!")
+                } else {
+                    let msg = "\(prfx) referer url differs from refererItem".mnDebug(add: "\(refererItem.url.relativePath) != \(refererURL.relativePath)")
+                    dlog?.warning("\(msg)")
+                    isAllowed = false
+                }
+            } else {
+                // No referer url in cur req
+            }
+            
+            if let redirTo = prev.lastRedirectedTo {
+                if req.url.url.relativePath == redirTo.url.relativePath {
+                    dlogVerbose?.success("\(prfx) cur url matches prev redirect to!")
+                } else {
+                    let msg = "\(prfx) cur url differs from redirectTo".mnDebug(add: "\(req.url.url.relativePath) != \(redirTo.url.relativePath)")
+                    dlog?.warning("\(msg)")
+                    isAllowed = false
+                }
+            } else {
+                // No redirTo in history's prev item! (this means "this" / current item/req should NOTE get a redirFrom)
+                isAllowed = false
+            }
+            
+            if let paramPrevReqId = req.parameters.get("req_id") {
+                if prev.requestId == paramPrevReqId {
+                    dlogVerbose?.success("\(prfx) param req_id matches prev item request id!")
+                } else {
+                    let msg = "\(prfx) param req_id differs from prev request id".mnDebug(add: "\(paramPrevReqId) != \(prev.requestId)")
+                    dlog?.warning("\(msg)")
+                    isAllowed = false
+                }
+            }
+            
+            if isAllowed {
+                return MNRoutingHistoryItem.Action.redirectedFrom(MNRoutingHistoryItem.Redirection(url: prev.url,
+                                                                                                   reqId: prev.requestId,
+                                                                                                   status: prev.lastStatus))
+            }
+        }
+        
+        return nil
+    }
+                
+    @discardableResult
+    public func update(req:Request, response:Response? = nil, action: MNRoutingHistoryItem.Action = .none) throws ->MNRoutingHistoryItem? {
+        
+        // We should not save file-requests, such as .js, .svg, .jpg, .ico files etc.
+        let isFileRequest = req.url.url.pathExtension.count > 0
+        if isFileRequest && !Self.SAVES_FILE_REQUESTS {
+            return nil
+        }
+        
+        var result : MNRoutingHistoryItem? = nil
+        if let aresult = self.findItem(req: req) {
+            result = aresult
+            try result?.update(req: req, response: response, action: action)
+            dlogVerbose?.info("   Found history item \(result!.requestId) out of \(self.items.count) items")
+        } else {
+            result = try MNRoutingHistoryItem(req: req, response: response, action: action)
+            
+            self.items.append(result!)
+            dlogVerbose?.info("   Created new history item \(result!.requestId) \(result!.route.description) (\(self.items.count) items)")
+            
+            // Update with deduced redirectFrom, if provided, and previous item was a redirectTo + referer etc:
+            // We ferch the referer from the request and the redirectTo from the prvious history item, and deduce the redirectedFrom:
+            if let redirectFrom = self.deduceRedirectFrom(item:result!, for: req, response: response) {
+                try result?.update(req: req, response: response, action: redirectFrom)
+            }
+        }
+        guard let result = result else {
+            throw MNError(code:.misc_failed_creating, reason: "Failed creating routing history item".mnDebug(add: "Req: \(req.description)"))
+        }
+        
+        self.save(to: req)
         
         return result
     }
-    
-    @discardableResult
-    func update(path:String, method:HTTPMethod, reqId:String, error:Abort?)->MNRoutingHistoryItem {
-        var err : MNError? = nil
-        if let error = error {
-            err = MNError(code:MNErrorCode(rawValue: Int(error.status.code))!, reason: error.reason)
-        }
-        return self.update(path: path, method: method, reqId: reqId, error: err)
-    }
-    
-    @discardableResult
-    public func update(path:String, method:HTTPMethod, reqId:String, error:Error?)->MNRoutingHistoryItem {
-        var err : MNError? = nil
-        if let error = error as? NSError {
-            err = MNError(code:MNErrorCode(rawValue: Int(error.code))!, reason: error.reason)
-        }
-        return self.update(path: path, method: method, reqId: reqId, error: err)
-    }
-    
-    @discardableResult
-    public func update<Succ>(req:Request, result resultT:Result<Succ, Error>)->MNRoutingHistoryItem {
-        var result :  MNRoutingHistoryItem!
-        switch resultT {
-        case .success:
-            result = self.update(path: req.url.path,
-                                 method: req.method,
-                                 reqId: req.requestUUIDString,
-                                 error: MNError(.http_stt_ok, reason: HTTPStatus.ok.reasonPhrase))
-        case .failure(let err):
-            if let abort = err as? Abort {
-                result =  self.update(path: req.url.path,
-                                      method: req.method,
-                                      reqId: req.requestUUIDString,
-                                      error: MNError(MNErrorCode(rawValue: MNErrorInt(abort.status.code))!, reason: abort.reason))
-            } else if let appErr = err as? MNError {
-                result = self.update(path: req.url.path,
-                                     method: req.method,
-                                     reqId: req.requestUUIDString,
-                                     error:appErr)
-            } else {
-                let nsErr = err as NSError
-                result = self.update(path: req.url.path,
-                                     method: req.method,
-                                     reqId: req.requestUUIDString,
-                                     error:MNError(MNErrorCode(rawValue: nsErr.code) ?? MNErrorCode.misc_unknown, reason: nsErr.reason))
-            }
-        }
-        self.save(to: req)
-        return result
-    }
-    
-    @discardableResult
-    public func update(req:Request, error:Error)->MNRoutingHistoryItem {
-        let res : Result<Bool, Error> = .failure(error)
-        return self.update(req: req, result: res)
-    }
-    
-    @discardableResult
-    public func update(req:Request, status:HTTPStatus?)->MNRoutingHistoryItem {
-        var error : MNError? = nil
-        if let status = status {
-            error = MNError(MNErrorCode(rawValue: MNErrorInt(status.code))!, reason: status.reasonPhrase)
-        }
-        let result = self.update(path: req.url.path, method: req.method, reqId: req.requestUUIDString, error: error)
-        self.save(to: req)
-        return result
-    }
-
-    @discardableResult
-    public func update(req:Request, response:Response? = nil)->MNRoutingHistoryItem {
-        return self.update(req: req, status: response?.status)
-    }
-    */
-    
+        
     // MARK: Equatable
     public static func == (lhs: MNRoutingHistory, rhs: MNRoutingHistory) -> Bool {
         return lhs.items == rhs.items
@@ -200,6 +237,16 @@ public class MNRoutingHistory : JSONSerializable, Hashable, CustomStringConverti
     // MARK: CustomStringConvertible
     public var description: String {
         return items.descriptionLines
+    }
+    
+    public func debugDescLines()->[String] {
+        var result : [String] = ["RouteHistory \(items.count) items"]
+        
+        self.items.forEachIndex { index, item in
+            var line = "\(String(index).paddingLeft(toLength: 2, withPad: " ")). HItem: \(item.shortdescription)"
+            result.append(line)
+        }
+        return result
     }
 }
 
@@ -228,7 +275,9 @@ public extension Vapor.Request /* MNRoutingHistory / routing history */ {
         if result == nil {
             result = MNRoutingHistory()
             self.saveToSessionStore(key: MNRoutingHistoryStorageKey.self, value: result)
-            result
+            dlogVerbose?.info(" Created new route history. sessioniD: \(self.session.id.wrappedValue.descOrNil)")
+        } else {
+            // dlogVerbose?.info(" Found an existing route history. \(result?.items.count.description ?? "?") items. sessioniD: \(self.session.id.wrappedValue.descOrNil)")
         }
         
         // We assume result was found or created!

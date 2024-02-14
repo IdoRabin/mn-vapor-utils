@@ -8,6 +8,7 @@
 import Foundation
 import NIO // KeepAliveState and more..
 import Vapor
+import MNUtils
 
 public extension Vapor.Response {
     public static func NotImplemented(description:String? = "Not implemented.")->Response {
@@ -19,5 +20,23 @@ public extension Vapor.Response {
 HTTP \(HTTPResponseStatus.notImplemented)\nNot implemented:
 description: \(description)
 """))
+    }
+    
+    public var asMNError : MNError? {
+        guard self.status != .ok else {
+            return nil
+        }
+        
+        var reason = self.status.reasonPhrase ?? "Unknown error for response"
+        return MNError(code: MNErrorCode(rawValue: Int(self.status.code))!, reason: reason)
+    }
+    
+    public var asMNErrorStruct : MNErrorStruct? {
+        guard let mnError = self.asMNError else {
+            return nil
+        }
+        var errStruct = MNErrorStruct(mnError: mnError)
+        // errStruct.update(originatingPath: )
+        return errStruct
     }
 }

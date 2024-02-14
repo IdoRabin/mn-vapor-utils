@@ -22,9 +22,23 @@ public extension ReqStorageKey /* default implementation */  {
 }
 
 // MARK: structs implementing ReqStorageKey
-public struct RedirectedFromStorageKey : ReqStorageKey {
-    public typealias Value = String
-}
+// MARK: Types
+//public struct MNRedirectRecord : Sendable, Codable, Hashable, Equatable, JSONSerializable {
+//    public let reqId : String
+//    public let srcUrl : URL
+//    public let dstUrl : URL
+//    public let date : Date
+//    public init(reqId: String, srcUrl: URL, dstURL:URL, date: Date) {
+//        self.reqId = reqId
+//        self.srcUrl = srcUrl
+//        self.dstUrl = dstURL
+//        self.date = date
+//    }
+//}
+
+//public struct RedirectedFromStorageKey : ReqStorageKey {
+//    public typealias Value = MNRedirectRecord
+//}
 
 public struct RequestIdStorageKey : ReqStorageKey {
     public typealias Value = String
@@ -71,19 +85,19 @@ public struct SelfUserIDStorageKey : ReqStorageKey {
 open class ReqStorageKeys {
     // Equivalents of RouteInfoCodingKeys:
     static public let requestId = RequestIdStorageKey.self
-    static public let redirectedFrom = RedirectedFromStorageKey.self
-    static public let contextText = ContextTextStorageKey.self
+//    static public let redirectedFrom = RedirectedFromStorageKey.self
+//    static public let contextText = ContextTextStorageKey.self
     static public let selfUserID = SelfUserIDStorageKey.self
     
-    static public let errorCode = ErrorCodeStorageKey.self
-    static public let errorReason = ErrorReasonStorageKey.self
-    static public let errorText = ErrorTextStorageKey.self
-    static public let errorRequestID = ErrorRequestIDStorageKey.self
-    static public let errorOriginatingPath = ErrorOriginatingPathStorageKey.self
+//    static public let errorCode = ErrorCodeStorageKey.self
+//    static public let errorReason = ErrorReasonStorageKey.self
+//    static public let errorText = ErrorTextStorageKey.self
+//    static public let errorRequestID = ErrorRequestIDStorageKey.self
+//    static public let errorOriginatingPath = ErrorOriginatingPathStorageKey.self
     
     // Instructions:
-    static public let userTokenCreateIfExpired = UserTokenCreateIfExpiredKey.self
-    static public let userTokenMakeIfMissing = UserTokenMakeIfMissingKey.self
+//    static public let userTokenCreateIfExpired = UserTokenCreateIfExpiredKey.self
+//    static public let userTokenMakeIfMissing = UserTokenMakeIfMissingKey.self
     
     static public var all : [any ReqStorageKey.Type]  = [
         ReqStorageKeys.selfUserID,
@@ -101,12 +115,12 @@ open class ReqStorageKeys {
         */
         
         ReqStorageKeys.requestId,
-        ReqStorageKeys.redirectedFrom,
-        ReqStorageKeys.errorCode,
-        ReqStorageKeys.errorReason,
-        ReqStorageKeys.contextText,
+        //ReqStorageKeys.redirectedFrom,
+//        ReqStorageKeys.errorCode,
+//        ReqStorageKeys.errorReason,
+//        ReqStorageKeys.contextText,
         
-        ReqStorageKeys.userTokenCreateIfExpired,
-        ReqStorageKeys.userTokenMakeIfMissing,
+//        ReqStorageKeys.userTokenCreateIfExpired,
+//        ReqStorageKeys.userTokenMakeIfMissing,
     ]
 }
