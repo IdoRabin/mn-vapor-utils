@@ -79,7 +79,7 @@ public class MNRouteGroup : Sendable, JSONSerializable, CustomDebugStringConvert
         for (atag, aroutes) in routesByTag {
             if result[atag] == nil {
                 let productType = typesByTag[atag] ?? .apiResponse
-                let baseTitle = atag.lowercased().capitalized
+                let baseTitle = atag.capitalized
                 let group = MNRouteGroup(groupTag: atag,
                                          productType: productType,
                                          title: "\(baseTitle) group",

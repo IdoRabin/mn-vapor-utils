@@ -163,7 +163,9 @@ public class MNRoutingHistoryItem : JSONSerializable, Hashable, CustomStringConv
                 (errStatus.code != self.lastStatus.code) {
                 let msg = "MNRoutingHistoryItem validate Error vs. HttpStatus failed: \(self.lastStatus) error: \(errorStruct.error_reason) errorStatus: \(errStatus)"
                 // dlog?.warning("\(msg)")
-                throw MNError(code: .misc_failed_validation, reason: msg)
+                throw MNError(code:.http_stt_internalServerError, reason: msg, 
+                              underlyingError:
+                                MNError(code: .misc_failed_validation, reason: msg))
             }
         }
         
@@ -171,7 +173,9 @@ public class MNRoutingHistoryItem : JSONSerializable, Hashable, CustomStringConv
         if lastRedirectedTo != nil && lastRedirectedFrom != nil {
             let msg = "MNRoutingHistoryItem validate redirection: redirectedTo AND redirectedFrom are BOTH defined!".mnDebug(add: "\(lastRedirectedTo!.description) vs. \(lastRedirectedFrom!.description)")
             // dlog?.warning("\(msg)")
-            throw MNError(code: .misc_failed_validation, reason: msg)
+            throw MNError(code:.http_stt_internalServerError, reason: msg,
+                          underlyingError:
+                            MNError(code: .misc_failed_validation, reason: msg))
             
         }
     }

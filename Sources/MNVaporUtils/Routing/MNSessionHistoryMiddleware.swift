@@ -20,11 +20,20 @@ fileprivate let dlog : Logger? = Logger(label:"MNSessionHistoryMiddleware")
 /// This system does NOT Persist or LOG the routing history per session.
 public class MNSessionHistoryMiddleware : Middleware {
     
+    var skipPathComponents : [String] = []
+    
     // MARK: Middleware
     public func respond(to request: Request, chainingTo next: Responder) -> EventLoopFuture<Response> {
         
+        if request.url.url.pathComponents.lowercased.contains(anyOf: self.skipPathComponents) {
+            return next.respond(to: request)
+        }
+        
         guard request.hasSession else {
-            preconditionFailure("MNRoutingHistory / MNSessionHistoryMiddleware requires activating Vapor sessions:\n app.middleware.use(app.sessions.middleware) -")
+            let msg = "MNRoutingHistory / MNSessionHistoryMiddleware requires activating Vapor sessions:\n app.middleware.use(app.sessions.middleware) -".mnDebug(add: "request: \(request.url.string)")
+            dlog?.warning("\(msg)")
+            // preconditionFailure()
+            return next.respond(to: request)
         }
         
         // Add to history:

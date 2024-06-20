@@ -11,7 +11,7 @@ import Logging
 import MNUtils
 
 fileprivate let dlog : Logger? = Logger(label: "RoutingHistory")
-fileprivate let dlogVerbose : Logger? = Logger(label: "RoutingHistoryVe")
+fileprivate let dlogVerbose : Logger? = nil // Logger(label: "RoutingHistoryVe")
 
 // NOTE: VAPOR defines a public typealias HTTPStatus = NIOHTTP1.HTTPResponseStatus
 
@@ -85,6 +85,13 @@ public class MNRoutingHistory : JSONSerializable, Hashable, CustomStringConverti
         }
     }
     
+    public func findItem(reqId:String)->MNRoutingHistoryItem? {
+        let reqId = Vapor.Request.requestUUIDString(id: reqId)
+        return items.reversed().first(where: { item in
+            item.requestId == reqId && item.lastErrorStruct != nil
+        })
+    }
+        
     public func first(where block:(_ item:MNRoutingHistoryItem)->Bool)->MNRoutingHistoryItem? {
         return items.reversed().first { item in
             return block(item)
@@ -92,7 +99,6 @@ public class MNRoutingHistory : JSONSerializable, Hashable, CustomStringConverti
     }
     
     public func getError(byReqId reqId: String)->MNErrorStruct? {
-        // Note: Expecting a requestUUIDString
         let reqId = Vapor.Request.requestUUIDString(id: reqId)
         return items.reversed().first { item in
             item.requestId == reqId && item.lastErrorStruct != nil
@@ -255,7 +261,7 @@ public extension Vapor.Request /* MNRoutingHistory / routing history */ {
     
     /// Route history for the session, accessible from the requst. Max recent history items can be specified and changed.
     /// NOTE: Requires vapor config of: app.middleware.use(app.sessions.middleware)
-    var routeHistory : MNRoutingHistory? {
+    public var routeHistory : MNRoutingHistory? {
         return self.routeHistory(maxItems: MNRoutingHistory.DEFAULT_MAX_ITEMS)
     }
     
